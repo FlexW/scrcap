@@ -3,6 +3,7 @@ mod convert;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::fs::File;
+use std::io::Write;
 use std::os::fd::RawFd;
 use std::os::unix::io::FromRawFd;
 use std::process::exit;
@@ -11,7 +12,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
-use image::ColorType;
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::PngEncoder;
+use image::codecs::pnm::{self, PnmEncoder};
+use image::{ColorType, ImageEncoder};
 use log::{debug, error, info, LevelFilter};
 use memmap2::MmapMut;
 use nix::sys::{memfd, mman, stat};
@@ -51,6 +55,17 @@ pub struct FrameCopy {
     pub frame_format: FrameFormat,
     pub frame_color_type: ColorType,
     pub frame_mmap: MmapMut,
+}
+
+/// Supported image encoding formats.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum EncodingFormat {
+    /// Jpeg / jpg encoder.
+    Jpg,
+    /// Png encoder.
+    Png,
+    /// Ppm encoder
+    Ppm,
 }
 
 fn main() -> Result<()> {
@@ -210,7 +225,13 @@ fn main() -> Result<()> {
     // Copy the pixel data advertised by the compositor into the buffer we just created.
     frame.copy(&buffer);
 
-    read_frame(&mut event_queue, frame_state, frame_format, &mem_file)?;
+    let frame_copy = read_frame(&mut event_queue, frame_state, frame_format, &mem_file)?;
+
+    // Write screenshot to disk
+    let path = "screenshot.png";
+    let extension = EncodingFormat::Png;
+    debug!("Write screenshot to {}", path);
+    write_to_file(File::create(path)?, extension, frame_copy)?;
 
     Ok(())
 }
@@ -351,4 +372,62 @@ fn create_shm_fd() -> std::io::Result<RawFd> {
             Err(errno) => return Err(std::io::Error::from(errno)),
         }
     }
+}
+
+// Write an instance of FrameCopy to anything that implements Write trait. Eg: Stdout or a file
+/// on the disk.
+pub fn write_to_file(
+    mut output_file: impl Write,
+    encoding_format: EncodingFormat,
+    frame_copy: FrameCopy,
+) -> Result<()> {
+    debug!(
+        "Writing to disk with encoding format: {:?}",
+        encoding_format
+    );
+    match encoding_format {
+        EncodingFormat::Jpg => {
+            JpegEncoder::new(&mut output_file).write_image(
+                &frame_copy.frame_mmap,
+                frame_copy.frame_format.width,
+                frame_copy.frame_format.height,
+                frame_copy.frame_color_type,
+            )?;
+            output_file.flush()?;
+        }
+        EncodingFormat::Png => {
+            PngEncoder::new(&mut output_file).write_image(
+                &frame_copy.frame_mmap,
+                frame_copy.frame_format.width,
+                frame_copy.frame_format.height,
+                frame_copy.frame_color_type,
+            )?;
+            output_file.flush()?;
+        }
+        EncodingFormat::Ppm => {
+            let rgb8_data = if let ColorType::Rgba8 = frame_copy.frame_color_type {
+                let mut data = Vec::with_capacity(
+                    (3 * frame_copy.frame_format.width * frame_copy.frame_format.height) as _,
+                );
+                for chunk in frame_copy.frame_mmap.chunks_exact(4) {
+                    data.extend_from_slice(&chunk[..3]);
+                }
+                data
+            } else {
+                unimplemented!("Currently only ColorType::Rgba8 is supported")
+            };
+
+            PnmEncoder::new(&mut output_file)
+                .with_subtype(pnm::PnmSubtype::Pixmap(pnm::SampleEncoding::Binary))
+                .write_image(
+                    &rgb8_data,
+                    frame_copy.frame_format.width,
+                    frame_copy.frame_format.height,
+                    ColorType::Rgb8,
+                )?;
+            output_file.flush()?;
+        }
+    }
+
+    Ok(())
 }
