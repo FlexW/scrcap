@@ -13,7 +13,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use dirs;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
@@ -119,35 +119,27 @@ fn main() -> Result<()> {
 
     // Parse command line args
     let args = CmdArgs::parse();
+
     // Get filename
-    let filename = match args.filename {
-        Some(filename) => filename,
-        None => {
-            // Generate a name
-            let time = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(n) => n.as_secs().to_string(),
-                Err(_) => {
-                    warn!("SystemTime before UNIX EPOCH!");
-                    "TIME-BEFORE-UNIX-EPOCH".into()
-                }
-            };
-            format!("screenshot-{}", time)
-        }
-    };
+    let filename = args.filename.unwrap_or({
+        // Generate a name
+        let time = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(n) => n.as_secs().to_string(),
+            Err(_) => {
+                warn!("SystemTime before UNIX EPOCH!");
+                "TIME-BEFORE-UNIX-EPOCH".into()
+            }
+        };
+        format!("screenshot-{}", time)
+    });
+
     // Get encoding that should be used for screenshot
-    let image_encoding = match args.encoding_format {
-        Some(image_encoding) => image_encoding,
-        None => EncodingFormat::Png,
-    };
+    let image_encoding = args.encoding_format.unwrap_or(EncodingFormat::Png);
 
     // Get the directory where the screenshot should be saved
-    let directory = match args.directory {
-        Some(dir) => dir,
-        None => match get_screenshot_directory() {
-            Ok(dir) => dir,
-            Err(_) => bail!("Could not get a writeable directory for screenshot"),
-        },
-    };
+    let directory = args.directory.unwrap_or(
+        get_screenshot_directory().context("Could not get a writeable directory for screenshot")?,
+    );
 
     // Connect to the server
     let display = Display::connect_to_env().unwrap();
