@@ -17,7 +17,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::pnm::{self, PnmEncoder};
 use image::{ColorType, ImageEncoder};
-use log::{debug, error, info, LevelFilter};
+use log::{debug, error, info, warn, LevelFilter};
 use memmap2::MmapMut;
 use nix::sys::{memfd, mman, stat};
 use nix::{fcntl, unistd};
@@ -114,10 +114,22 @@ fn main() -> Result<()> {
 
     // Parse command line args
     let args = CmdArgs::parse();
+    // Get filename
     let filename = match args.filename {
         Some(filename) => filename,
-        None => "screenshot".into(),
+        None => {
+            // Generate a name
+            let time = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(n) => n.as_secs().to_string(),
+                Err(_) => {
+                    warn!("SystemTime before UNIX EPOCH!");
+                    "TIME-BEFORE-UNIX-EPOCH".into()
+                }
+            };
+            format!("screenshot-{}", time)
+        }
     };
+    // Get encoding that should be used for screenshot
     let image_encoding = match args.encoding_format {
         Some(image_encoding) => image_encoding,
         None => EncodingFormat::Png,
