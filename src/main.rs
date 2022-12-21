@@ -1,5 +1,6 @@
 mod convert;
 
+use clap::Parser;
 use std::cell::RefCell;
 use std::ffi::CStr;
 use std::fs::File;
@@ -28,6 +29,18 @@ use wayland_client::{Display, GlobalManager};
 use wayland_protocols::wlr::unstable::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
 use crate::convert::create_converter;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+/// A screenshot tool written in Rust
+struct CmdArgs {
+    /// Filename to use for screenshot without file extension
+    #[arg(short, long)]
+    filename: Option<String>,
+    /// Format to use for encoding screenshot (png, jpg, ppm)
+    #[arg(short, long)]
+    encoding_format: Option<EncodingFormat>,
+}
 
 /// Type of frame supported by the compositor. For now we only support Argb8888,
 /// Xrgb8888, and Xbgr8888.
@@ -68,6 +81,29 @@ pub enum EncodingFormat {
     Ppm,
 }
 
+impl From<String> for EncodingFormat {
+    fn from(value: String) -> Self {
+        let value = value.to_lowercase();
+        match value.as_str() {
+            "jpg" => EncodingFormat::Jpg,
+            "jpeg" => EncodingFormat::Jpg,
+            "png" => EncodingFormat::Png,
+            "ppm" => EncodingFormat::Ppm,
+            _ => EncodingFormat::Png,
+        }
+    }
+}
+
+impl Into<String> for EncodingFormat {
+    fn into(self) -> String {
+        match self {
+            EncodingFormat::Png => "png".into(),
+            EncodingFormat::Jpg => "jpg".into(),
+            EncodingFormat::Ppm => "ppm".into(),
+        }
+    }
+}
+
 fn main() -> Result<()> {
     // Setup logger
     SimpleLogger::new()
@@ -75,6 +111,17 @@ fn main() -> Result<()> {
         .env()
         .init()
         .unwrap();
+
+    // Parse command line args
+    let args = CmdArgs::parse();
+    let filename = match args.filename {
+        Some(filename) => filename,
+        None => "screenshot".into(),
+    };
+    let image_encoding = match args.encoding_format {
+        Some(image_encoding) => image_encoding,
+        None => EncodingFormat::Png,
+    };
 
     // Connect to the server
     let display = Display::connect_to_env().unwrap();
@@ -228,10 +275,9 @@ fn main() -> Result<()> {
     let frame_copy = read_frame(&mut event_queue, frame_state, frame_format, &mem_file)?;
 
     // Write screenshot to disk
-    let path = "screenshot.png";
-    let extension = EncodingFormat::Png;
+    let path = format!("{}.{}", filename, Into::<String>::into(image_encoding));
     debug!("Write screenshot to {}", path);
-    write_to_file(File::create(path)?, extension, frame_copy)?;
+    write_to_file(File::create(path)?, image_encoding, frame_copy)?;
 
     Ok(())
 }
