@@ -2,6 +2,7 @@ mod convert;
 
 use clap::Parser;
 use std::cell::RefCell;
+use std::env;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::Write;
@@ -13,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
+use dirs;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::pnm::{self, PnmEncoder};
@@ -37,6 +39,9 @@ struct CmdArgs {
     /// Filename to use for screenshot without file extension
     #[arg(short, long)]
     filename: Option<String>,
+    /// Directory where the screenshot will be saved
+    #[arg(short, long)]
+    directory: Option<String>,
     /// Format to use for encoding screenshot (png, jpg, ppm)
     #[arg(short, long)]
     encoding_format: Option<EncodingFormat>,
@@ -133,6 +138,15 @@ fn main() -> Result<()> {
     let image_encoding = match args.encoding_format {
         Some(image_encoding) => image_encoding,
         None => EncodingFormat::Png,
+    };
+
+    // Get the directory where the screenshot should be saved
+    let directory = match args.directory {
+        Some(dir) => dir,
+        None => match get_screenshot_directory() {
+            Ok(dir) => dir,
+            Err(_) => bail!("Could not get a writeable directory for screenshot"),
+        },
     };
 
     // Connect to the server
@@ -287,7 +301,12 @@ fn main() -> Result<()> {
     let frame_copy = read_frame(&mut event_queue, frame_state, frame_format, &mem_file)?;
 
     // Write screenshot to disk
-    let path = format!("{}.{}", filename, Into::<String>::into(image_encoding));
+    let path = format!(
+        "{}/{}.{}",
+        directory,
+        filename,
+        Into::<String>::into(image_encoding)
+    );
     debug!("Write screenshot to {}", path);
     write_to_file(File::create(path)?, image_encoding, frame_copy)?;
 
@@ -488,4 +507,14 @@ pub fn write_to_file(
     }
 
     Ok(())
+}
+
+fn get_screenshot_directory() -> Result<String> {
+    // First try to use XDG_PICTURES_DIR.
+    // If that fails use home directory.
+    // If that fails use the current directory
+    Ok(dirs::picture_dir()
+        .unwrap_or(dirs::home_dir().unwrap_or(env::current_dir()?))
+        .to_string_lossy()
+        .into())
 }
