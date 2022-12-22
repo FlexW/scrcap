@@ -1,5 +1,5 @@
+use crate::screenshot::FrameFormat;
 use image::ColorType;
-use wayland_client::protocol::wl_shm;
 
 pub trait Convert {
     /// Convert raw image data into output type, return said type
@@ -20,18 +20,11 @@ const SHIFT10BITS_2: u32 = 10;
 
 /// Creates format converter based of input format, return None if conversion
 /// isn't possible. Conversion is happening inplace.
-pub fn create_converter(format: wl_shm::Format) -> Option<Box<dyn Convert>> {
+pub fn create_converter(format: FrameFormat) -> Box<dyn Convert> {
     match format {
-        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => {
-            Some(Box::new(ConvertNone::default()))
-        }
-        wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888 => {
-            Some(Box::new(ConvertRGB8::default()))
-        }
-        wl_shm::Format::Xbgr2101010 | wl_shm::Format::Abgr2101010 => {
-            Some(Box::new(ConvertBGR10::default()))
-        }
-        _ => None,
+        FrameFormat::Xbgr8888 | FrameFormat::Abgr8888 => Box::new(ConvertNone::default()),
+        FrameFormat::Xrgb8888 | FrameFormat::Argb8888 => Box::new(ConvertRGB8::default()),
+        FrameFormat::Xbgr2101010 | FrameFormat::Abgr2101010 => Box::new(ConvertBGR10::default()),
     }
 }
 
