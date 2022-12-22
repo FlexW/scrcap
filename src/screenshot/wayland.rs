@@ -1,4 +1,4 @@
-use super::{Frame, FrameFormat, Output, Region, Result, ScreenshotBackend};
+use super::{Frame, FrameFormat, Output, OutputDescription, Region, Result, ScreenshotBackend};
 use crate::convert::create_converter;
 use crate::screenshot::FrameDescription;
 use anyhow::{bail, Context};
@@ -40,7 +40,7 @@ pub struct OutputWayland {
 pub struct ScreenshotBackendWayland {
     event_queue: EventQueue,
     globals: GlobalManager,
-    outputs: Vec<Output>,
+    outputs: Vec<OutputDescription>,
 }
 
 impl ScreenshotBackendWayland {
@@ -59,11 +59,28 @@ impl ScreenshotBackendWayland {
         let output = globals
             .instantiate_exact::<WlOutput>(4)
             .context("Could not get output")?;
+
+        let output_width = Rc::new(RefCell::new(0));
+        let output_height = Rc::new(RefCell::new(0));
         output.quick_assign({
             use wayland_client::protocol::wl_output::Event;
+
+            let output_width = output_width.clone();
+            let output_height = output_height.clone();
+
             move |_, event, _| match event {
                 Event::Name { name } => {
                     info!("Use output: {}", name);
+                }
+                Event::Mode {
+                    flags: _,
+                    width,
+                    height,
+                    refresh: _,
+                } => {
+                    info!("Output size: {}x{}", width, height);
+                    *output_width.borrow_mut() = width as u32;
+                    *output_height.borrow_mut() = height as u32;
                 }
                 _ => (),
             }
@@ -71,16 +88,23 @@ impl ScreenshotBackendWayland {
 
         event_queue.sync_roundtrip(&mut (), |_, _, _| ())?;
 
+        let output_width = *output_width.borrow();
+        let output_height = *output_height.borrow();
+
         Ok(Self {
             event_queue,
             globals,
-            outputs: vec![Output::Wayland(OutputWayland { raw: output })],
+            outputs: vec![OutputDescription {
+                width: output_width,
+                height: output_height,
+                output: Output::Wayland(OutputWayland { raw: output }),
+            }],
         })
     }
 }
 
 impl ScreenshotBackend for ScreenshotBackendWayland {
-    fn outputs(&self) -> Vec<Output> {
+    fn outputs(&self) -> Vec<OutputDescription> {
         self.outputs.clone()
     }
 
@@ -107,6 +131,7 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
 
         // Take screenshot
         let frame = if let Some(region) = region {
+            debug!("Taking screenshot of region {:?}", region);
             screencopy_manager.capture_output_region(
                 overlay_cursor as i32,
                 &output.raw,

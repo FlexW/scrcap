@@ -39,15 +39,23 @@ pub enum Output {
     Wayland(OutputWayland),
 }
 
-pub struct Region {
-    pub x: u32,
-    pub y: u32,
+#[derive(Clone)]
+pub struct OutputDescription {
     pub width: u32,
     pub height: u32,
+    pub output: Output,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Region {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
 pub trait ScreenshotBackend {
-    fn outputs(&self) -> Vec<Output>;
+    fn outputs(&self) -> Vec<OutputDescription>;
     fn screenshot(
         &mut self,
         output: &Output,
