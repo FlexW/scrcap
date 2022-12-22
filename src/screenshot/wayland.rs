@@ -1,4 +1,4 @@
-use super::{Frame, FrameFormat, Output, Result, ScreenshotBackend};
+use super::{Frame, FrameFormat, Output, Region, Result, ScreenshotBackend};
 use crate::convert::create_converter;
 use crate::screenshot::FrameDescription;
 use anyhow::{bail, Context};
@@ -84,7 +84,12 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
         self.outputs.clone()
     }
 
-    fn screenshot(&mut self, output: &Output, overlay_cursor: bool) -> Result<Frame> {
+    fn screenshot(
+        &mut self,
+        output: &Output,
+        overlay_cursor: bool,
+        region: Option<Region>,
+    ) -> Result<Frame> {
         let output = match output {
             Output::Wayland(output) => output,
             // _ => panic!("Wayland backend only supports Wayland output!"),
@@ -101,7 +106,18 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
         )?;
 
         // Take screenshot
-        let frame = screencopy_manager.capture_output(overlay_cursor as i32, &output.raw);
+        let frame = if let Some(region) = region {
+            screencopy_manager.capture_output_region(
+                overlay_cursor as i32,
+                &output.raw,
+                region.x as i32,
+                region.y as i32,
+                region.width as i32,
+                region.height as i32,
+            )
+        } else {
+            screencopy_manager.capture_output(overlay_cursor as i32, &output.raw)
+        };
         frame.quick_assign({
         let frame_formats = frame_formats.clone();
         let frame_state = frame_state.clone();
@@ -211,15 +227,6 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
         let frame = read_frame(&mut self.event_queue, frame_state, frame_format, &mem_file)?;
 
         Ok(frame)
-    }
-
-    fn screenshot_region(
-        &self,
-        _output: &Output,
-        _region: super::Region,
-        _overlay_cursor: bool,
-    ) -> Result<Frame> {
-        todo!()
     }
 }
 

@@ -9,7 +9,7 @@ use std::fs::File;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::output::{get_screenshot_directory, write_to_file};
-use crate::screenshot::{ScreenshotBackend, ScreenshotBackendWayland};
+use crate::screenshot::{Region, ScreenshotBackend, ScreenshotBackendWayland};
 use anyhow::{Context, Result};
 use log::{debug, warn, LevelFilter};
 use simple_logger::SimpleLogger;
@@ -64,7 +64,17 @@ fn main() -> Result<()> {
     // Take the screenshot
     let mut screenshot_backend = ScreenshotBackendWayland::new()?;
     let outputs = screenshot_backend.outputs();
-    let frame = screenshot_backend.screenshot(&outputs[0], false)?;
+    let frame = screenshot_backend.screenshot(&outputs[0], false, None)?;
+    // let frame = screenshot_backend.screenshot(
+    //     &outputs[0],
+    //     false,
+    //     Some(Region {
+    //         x: 200,
+    //         y: 200,
+    //         width: 200,
+    //         height: 200,
+    //     }),
+    // )?;
 
     // Write screenshot to disk
     let path = format!(

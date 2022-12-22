@@ -40,19 +40,18 @@ pub enum Output {
 }
 
 pub struct Region {
-    _x: u32,
-    _y: u32,
-    _width: u32,
-    _height: u32,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub trait ScreenshotBackend {
     fn outputs(&self) -> Vec<Output>;
-    fn screenshot(&mut self, output: &Output, overlay_cursor: bool) -> Result<Frame>;
-    fn screenshot_region(
-        &self,
+    fn screenshot(
+        &mut self,
         output: &Output,
-        region: Region,
         overlay_cursor: bool,
+        region: Option<Region>,
     ) -> Result<Frame>;
 }
