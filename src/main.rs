@@ -1,6 +1,7 @@
 mod convert;
 mod output;
 mod screenshot;
+mod sway;
 
 use clap::Parser;
 use output::EncodingFormat;
@@ -10,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::output::{get_screenshot_directory, write_to_file};
 use crate::screenshot::{Region, ScreenshotBackend, ScreenshotBackendWayland};
+use crate::sway::active_window_area;
 use anyhow::{bail, Context, Result};
 use log::{debug, warn, LevelFilter};
 use simple_logger::SimpleLogger;
@@ -39,6 +41,9 @@ struct CmdArgs {
     /// Height for screenshot region
     #[arg(short, long)]
     height: Option<i32>,
+    /// Make a screenshot of the active window
+    #[arg(short, long)]
+    active: bool,
 }
 
 fn main() -> Result<()> {
@@ -78,35 +83,48 @@ fn main() -> Result<()> {
     let outputs = screenshot_backend.outputs();
     let output = &outputs[0];
 
-    let frame =
-        if args.x.is_some() || args.y.is_some() || args.width.is_some() || args.height.is_some() {
-            let x = args.x.unwrap_or(0);
-            let y = args.y.unwrap_or(0);
-            let width = args.width.unwrap_or((output.width as i32 - x).max(0));
-            let height = args.height.unwrap_or((output.height as i32 - y).max(0));
+    let region = if args.active {
+        let region = active_window_area()?;
+        Some(Region {
+            x: region.0,
+            y: region.1,
+            width: region.2,
+            height: region.3,
+        })
+    } else if args.x.is_some() || args.y.is_some() || args.width.is_some() || args.height.is_some()
+    {
+        let x = args.x.unwrap_or(0);
+        let y = args.y.unwrap_or(0);
+        let width = args.width.unwrap_or((output.width as i32 - x).max(0));
+        let height = args.height.unwrap_or((output.height as i32 - y).max(0));
 
-            if x < 0
-                || y < 0
-                || width < 0
-                || height < 0
-                || x >= output.width as i32
-                || y >= output.height as i32
-                || width == 0
-                || height == 0
-            {
-                bail!("Region is invalid");
-            }
+        if x < 0
+            || y < 0
+            || width < 0
+            || height < 0
+            || x >= output.width as i32
+            || y >= output.height as i32
+            || width == 0
+            || height == 0
+        {
+            bail!("Region is invalid");
+        }
 
-            let region = Region {
-                x,
-                y,
-                width,
-                height,
-            };
-            screenshot_backend.screenshot(&output.output, false, Some(region))?
-        } else {
-            screenshot_backend.screenshot(&output.output, false, None)?
-        };
+        Some(Region {
+            x,
+            y,
+            width,
+            height,
+        })
+    } else {
+        None
+    };
+
+    let frame = if let Some(region) = region {
+        screenshot_backend.screenshot(&output.output, false, Some(region))?
+    } else {
+        screenshot_backend.screenshot(&output.output, false, None)?
+    };
 
     // Write screenshot to disk
     let path = format!(
