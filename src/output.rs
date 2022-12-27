@@ -1,4 +1,4 @@
-use crate::screenshot::Frame;
+use crate::platform::Frame;
 use anyhow::Result;
 use image::codecs::pnm::{self, PnmEncoder};
 use image::ImageEncoder;
@@ -13,7 +13,7 @@ use std::io::Write;
 /// Supported image encoding formats.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum EncodingFormat {
-    /// Jpeg / jpg encoder.
+    /// Jpeg / Jpg encoder.
     Jpg,
     /// Png encoder.
     Png,

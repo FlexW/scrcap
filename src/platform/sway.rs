@@ -1,7 +1,14 @@
-use super::{Frame, FrameFormat, Output, OutputDescription, Region, Result, ScreenshotBackend};
-use crate::convert::create_converter;
-use crate::screenshot::FrameDescription;
-use anyhow::{bail, Context};
+use std::{
+    cell::RefCell,
+    fs::File,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use crate::platform::FrameDescription;
+
+use super::{convert::create_converter, Frame, FrameFormat, Output, Platform, Region};
+use anyhow::{bail, Context, Result};
 use log::{debug, error, info};
 use memmap2::MmapMut;
 use nix::sys::{memfd, mman, stat};
@@ -10,139 +17,164 @@ use std::ffi::CStr;
 use std::os::fd::RawFd;
 use std::os::unix::io::FromRawFd;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{
-    cell::RefCell,
-    fs::File,
-    rc::Rc,
-    sync::atomic::{AtomicBool, Ordering},
-};
 use thiserror::Error;
 use wayland_client::{
+    global_filter,
     protocol::{wl_output::WlOutput, wl_shm},
     Display, EventQueue, GlobalManager, Main,
 };
 use wayland_protocols::wlr::unstable::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
 
-/// State of the frame after attemting to copy it's data to a wl_buffer.
-#[derive(Debug, Copy, Clone, PartialEq)]
-enum FrameState {
-    /// Compositor returned a failed event on calling `frame.copy`.
-    Failed,
-    /// Compositor sent a Ready event on calling `frame.copy`.
-    Finished,
-}
+const WL_OUTPUT_VERSION: u32 = 4;
 
-#[derive(Clone)]
-pub struct OutputWayland {
-    raw: Main<WlOutput>,
-}
-
-pub struct ScreenshotBackendWayland {
+pub struct PlatformWayland {
     event_queue: EventQueue,
     globals: GlobalManager,
-    outputs: Vec<OutputDescription>,
+    screencopy_manager: Main<ZwlrScreencopyManagerV1>,
+    outputs: Rc<RefCell<Vec<WaylandOutput>>>,
 }
 
-impl ScreenshotBackendWayland {
+impl PlatformWayland {
     pub fn new() -> Result<Self> {
         // Connect to the server
         let display = Display::connect_to_env().context("Could not connect to Wayland server")?;
         let mut event_queue = display.create_event_queue();
         let attached_display = (*display).clone().attach(event_queue.token());
-        let globals = GlobalManager::new(&attached_display);
+
+        let wayland_outputs = Rc::new(RefCell::new(Vec::new()));
+        let wayland_outputs_clone = wayland_outputs.clone();
+
+        let globals = GlobalManager::new_with_cb(
+            &attached_display,
+            global_filter!([
+                WlOutput,
+                WL_OUTPUT_VERSION,
+                move |output_handle: Main<WlOutput>, _: DispatchData| {
+                    let mut name = "<unknown>".to_owned();
+                    let mut output_scale = 1;
+                    let mut output_width = 0;
+                    let mut output_height = 0;
+                    let wayland_outputs = wayland_outputs.clone();
+
+                    output_handle.quick_assign(move |output_handle, event, _| {
+                        use wayland_client::protocol::wl_output::Event;
+                        match event {
+                            Event::Geometry {
+                                x: _,
+                                y: _,
+                                physical_width: _,
+                                physical_height: _,
+                                subpixel: _,
+                                make: _,
+                                model,
+                                transform: _,
+                            } => {
+                                name = model;
+                            }
+                            Event::Mode {
+                                flags: _,
+                                width,
+                                height,
+                                refresh: _,
+                            } => {
+                                output_width = width;
+                                output_height = height;
+                            }
+                            Event::Scale { factor } => {
+                                output_scale = factor;
+                            }
+                            Event::Done => {
+                                let output = Output {
+                                    name: name.clone(),
+                                    width: output_width,
+                                    height: output_height,
+                                    scale: output_scale,
+                                };
+
+                                let wayland_output = WaylandOutput {
+                                    raw: output_handle.clone(),
+                                    output,
+                                };
+                                info!("Found output: {:?}", wayland_output);
+                                wayland_outputs.borrow_mut().push(wayland_output);
+                            }
+                            _ => (),
+                        }
+                    })
+                }
+            ]),
+        );
 
         // A roundtrip synchronization to make sure the server received our registry
         // creation and sent us the global list
         event_queue.sync_roundtrip(&mut (), |_, _, _| unreachable!())?;
 
-        // Get the output
-        let output = globals
-            .instantiate_exact::<WlOutput>(4)
-            .context("Could not get output")?;
-
-        let output_width = Rc::new(RefCell::new(0));
-        let output_height = Rc::new(RefCell::new(0));
-        output.quick_assign({
-            use wayland_client::protocol::wl_output::Event;
-
-            let output_width = output_width.clone();
-            let output_height = output_height.clone();
-
-            move |_, event, _| match event {
-                Event::Name { name } => {
-                    info!("Use output: {}", name);
-                }
-                Event::Mode {
-                    flags: _,
-                    width,
-                    height,
-                    refresh: _,
-                } => {
-                    info!("Output size: {}x{}", width, height);
-                    *output_width.borrow_mut() = width as u32;
-                    *output_height.borrow_mut() = height as u32;
-                }
-                _ => (),
-            }
-        });
-
+        // Init outputs
         event_queue.sync_roundtrip(&mut (), |_, _, _| ())?;
 
-        let output_width = *output_width.borrow();
-        let output_height = *output_height.borrow();
-
-        Ok(Self {
-            event_queue,
-            globals,
-            outputs: vec![OutputDescription {
-                width: output_width,
-                height: output_height,
-                output: Output::Wayland(OutputWayland { raw: output }),
-            }],
-        })
-    }
-}
-
-impl ScreenshotBackend for ScreenshotBackendWayland {
-    fn outputs(&self) -> Vec<OutputDescription> {
-        self.outputs.clone()
-    }
-
-    fn screenshot(
-        &mut self,
-        output: &Output,
-        overlay_cursor: bool,
-        region: Option<Region>,
-    ) -> Result<Frame> {
-        let output = match output {
-            Output::Wayland(output) => output,
-            // _ => panic!("Wayland backend only supports Wayland output!"),
-        };
-        let frame_formats = Rc::new(RefCell::new(Vec::new()));
-        let frame_state = Rc::new(RefCell::new(None));
-        let frame_buffer_done = Rc::new(AtomicBool::new(false));
-
         // Instantiating screencopy manager
-        let screencopy_manager = self.globals
+        let screencopy_manager = globals
             .instantiate_exact::<ZwlrScreencopyManagerV1>(3)
             .context(
             "Failed to create screencopy manager. Does your compositor implement ZwlrScreencopy?",
         )?;
 
-        // Take screenshot
+        Ok(PlatformWayland {
+            event_queue,
+            globals,
+            screencopy_manager,
+            outputs: wayland_outputs_clone,
+        })
+    }
+
+    fn find_wl_output(&self, output: &Output) -> Result<Main<WlOutput>> {
+        for wayland_output in self.outputs.borrow().iter() {
+            if wayland_output.output.name == output.name {
+                return Ok(wayland_output.raw.clone());
+            }
+        }
+        bail!("No output found")
+    }
+}
+
+impl Platform for PlatformWayland {
+    fn outputs(&self) -> Vec<Output> {
+        self.outputs
+            .borrow()
+            .iter()
+            .map(|wayland_output| wayland_output.output.clone())
+            .collect::<Vec<_>>()
+    }
+
+    fn capture_frame(
+        &mut self,
+        output: &Output,
+        overlay_cursor: bool,
+        region: Option<Region>,
+    ) -> anyhow::Result<Frame> {
+        debug!("Taking screenshot of output {:?}", output.name);
+        let wl_output_handle = self.find_wl_output(output)?;
+
         let frame = if let Some(region) = region {
-            debug!("Taking screenshot of region {:?}", region);
-            screencopy_manager.capture_output_region(
+            debug!("Capture screenshot of region {:?}", region);
+            self.screencopy_manager.capture_output_region(
                 overlay_cursor as i32,
-                &output.raw,
+                &wl_output_handle,
                 region.x as i32,
                 region.y as i32,
                 region.width as i32,
                 region.height as i32,
             )
         } else {
-            screencopy_manager.capture_output(overlay_cursor as i32, &output.raw)
+            debug!("Capture screenshot of whole screen");
+            self.screencopy_manager
+                .capture_output(overlay_cursor as i32, &wl_output_handle)
         };
+
+        let frame_formats = Rc::new(RefCell::new(Vec::new()));
+        let frame_state = Rc::new(RefCell::new(None));
+        let frame_buffer_done = Rc::new(AtomicBool::new(false));
+
         frame.quick_assign({
         let frame_formats = frame_formats.clone();
         let frame_state = frame_state.clone();
@@ -199,10 +231,11 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
         }
 
         debug!(
-            "Received compositor frame buffer formats: {:#?}",
+            "Received compositor frame buffer formats: {:?}",
             frame_formats
         );
-        // Filter advertised wl_shm formats and select the first one that matches.
+
+        // Filter advertised formats and select the first one that matches.
         let frame_format = frame_formats
             .borrow()
             .iter()
@@ -217,7 +250,7 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
                 )
             })
             .copied();
-        debug!("Selected frame buffer format: {:#?}", frame_format);
+        debug!("Selected frame buffer format: {:?}", frame_format);
 
         // Check if frame format exists.
         let frame_format = match frame_format {
@@ -252,6 +285,77 @@ impl ScreenshotBackend for ScreenshotBackendWayland {
         let frame = read_frame(&mut self.event_queue, frame_state, frame_format, &mem_file)?;
 
         Ok(frame)
+    }
+
+    fn focused_window_area(&self) -> Result<Region> {
+        let mut connection = swayipc::Connection::new()?;
+        let tree = connection.get_tree()?;
+        let focused_node = tree.find_focused_as_ref(|node: _| node.focused);
+        if let Some(focused_node) = focused_node {
+            let rect = &focused_node.rect;
+            let window_rect = &focused_node.window_rect;
+
+            let x = rect.x + window_rect.x;
+            let y = rect.y + window_rect.y;
+            let width = window_rect.width;
+            let height = window_rect.height;
+
+            debug!(
+                "Focused window: {:?} x:{}, y: {}, width: {}, height: {}",
+                focused_node.name, x, y, width, height
+            );
+
+            return Ok(Region {
+                x,
+                y,
+                width,
+                height,
+            });
+        }
+
+        bail!("Could not find an active window")
+    }
+}
+
+#[derive(Debug)]
+struct WaylandOutput {
+    raw: Main<WlOutput>,
+    output: Output,
+}
+
+/// State of the frame after attemting to copy it's data to a wl_buffer.
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum FrameState {
+    /// Compositor returned a failed event on calling `frame.copy`.
+    Failed,
+    /// Compositor sent a Ready event on calling `frame.copy`.
+    Finished,
+}
+
+impl From<wl_shm::Format> for FrameFormat {
+    fn from(value: wl_shm::Format) -> Self {
+        match value {
+            wl_shm::Format::Xbgr2101010 => FrameFormat::Xbgr2101010,
+            wl_shm::Format::Xrgb8888 => FrameFormat::Xrgb8888,
+            wl_shm::Format::Xbgr8888 => FrameFormat::Xbgr8888,
+            wl_shm::Format::Abgr2101010 => FrameFormat::Abgr2101010,
+            wl_shm::Format::Abgr8888 => FrameFormat::Abgr8888,
+            wl_shm::Format::Argb8888 => FrameFormat::Argb8888,
+            _ => panic!("Unsupported wl_shm frame format"),
+        }
+    }
+}
+
+impl Into<wl_shm::Format> for FrameFormat {
+    fn into(self) -> wl_shm::Format {
+        match self {
+            FrameFormat::Xbgr2101010 => wl_shm::Format::Xbgr2101010,
+            FrameFormat::Xrgb8888 => wl_shm::Format::Xrgb8888,
+            FrameFormat::Xbgr8888 => wl_shm::Format::Xbgr8888,
+            FrameFormat::Abgr2101010 => wl_shm::Format::Abgr2101010,
+            FrameFormat::Argb8888 => wl_shm::Format::Argb8888,
+            FrameFormat::Abgr8888 => wl_shm::Format::Abgr8888,
+        }
     }
 }
 
@@ -382,33 +486,6 @@ fn create_shm_fd() -> std::io::Result<RawFd> {
             }
             Err(nix::errno::Errno::EINTR) => continue,
             Err(errno) => return Err(std::io::Error::from(errno)),
-        }
-    }
-}
-
-impl From<wl_shm::Format> for FrameFormat {
-    fn from(value: wl_shm::Format) -> Self {
-        match value {
-            wl_shm::Format::Xbgr2101010 => FrameFormat::Xbgr2101010,
-            wl_shm::Format::Xrgb8888 => FrameFormat::Xrgb8888,
-            wl_shm::Format::Xbgr8888 => FrameFormat::Xbgr8888,
-            wl_shm::Format::Abgr2101010 => FrameFormat::Abgr2101010,
-            wl_shm::Format::Abgr8888 => FrameFormat::Abgr8888,
-            wl_shm::Format::Argb8888 => FrameFormat::Argb8888,
-            _ => panic!("Unsupported wl_shm frame format"),
-        }
-    }
-}
-
-impl Into<wl_shm::Format> for FrameFormat {
-    fn into(self) -> wl_shm::Format {
-        match self {
-            FrameFormat::Xbgr2101010 => wl_shm::Format::Xbgr2101010,
-            FrameFormat::Xrgb8888 => wl_shm::Format::Xrgb8888,
-            FrameFormat::Xbgr8888 => wl_shm::Format::Xbgr8888,
-            FrameFormat::Abgr2101010 => wl_shm::Format::Abgr2101010,
-            FrameFormat::Argb8888 => wl_shm::Format::Argb8888,
-            FrameFormat::Abgr8888 => wl_shm::Format::Abgr8888,
         }
     }
 }

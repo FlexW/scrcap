@@ -1,4 +1,4 @@
-use crate::screenshot::FrameFormat;
+use crate::platform::FrameFormat;
 use image::ColorType;
 
 pub trait Convert {

@@ -1,18 +1,15 @@
-mod convert;
 mod output;
-mod screenshot;
-mod sway;
+mod platform;
 
 use clap::Parser;
 use output::EncodingFormat;
+use platform::{create_platform, Output, Region};
 
 use std::fs::File;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::output::{get_screenshot_directory, write_to_file};
-use crate::screenshot::{Region, ScreenshotBackend, ScreenshotBackendWayland};
-use crate::sway::active_window_area;
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use log::{debug, warn, LevelFilter};
 use simple_logger::SimpleLogger;
 
@@ -58,7 +55,9 @@ fn main() -> Result<()> {
     let args = CmdArgs::parse();
 
     // Get filename
-    let filename = args.filename.unwrap_or({
+    let filename = if let Some(filename) = args.filename.as_ref() {
+        filename.clone()
+    } else {
         // Generate a name
         let time = match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(n) => n.as_secs().to_string(),
@@ -68,31 +67,49 @@ fn main() -> Result<()> {
             }
         };
         format!("screenshot-{}", time)
-    });
+    };
 
     // Get encoding that should be used for screenshot
     let image_encoding = args.encoding_format.unwrap_or(EncodingFormat::Png);
 
     // Get the directory where the screenshot should be saved
-    let directory = args.directory.unwrap_or(
-        get_screenshot_directory().context("Could not get a writeable directory for screenshot")?,
-    );
+    let directory = if let Some(directory) = args.directory.as_ref() {
+        directory.clone()
+    } else {
+        get_screenshot_directory().context("Could not get a writeable directory for screenshot")?
+    };
 
     // Take the screenshot
-    let mut screenshot_backend = ScreenshotBackendWayland::new()?;
-    let outputs = screenshot_backend.outputs();
+    let mut platform = create_platform()?;
+    let outputs = platform.outputs();
     let output = &outputs[0];
 
+    // Get region on which screenshot should be captured
     let region = if args.active {
-        let region = active_window_area()?;
-        Some(Region {
-            x: region.0,
-            y: region.1,
-            width: region.2,
-            height: region.3,
-        })
-    } else if args.x.is_some() || args.y.is_some() || args.width.is_some() || args.height.is_some()
-    {
+        Some(platform.focused_window_area()?)
+    } else if let Some(region) = get_region_from_args(&args, output) {
+        Some(region?)
+    } else {
+        None
+    };
+
+    let frame = platform.capture_frame(output, false, region)?;
+
+    // Write screenshot to disk
+    let path = format!(
+        "{}/{}.{}",
+        directory,
+        filename,
+        Into::<String>::into(image_encoding)
+    );
+    debug!("Write screenshot to {}", path);
+    write_to_file(File::create(path)?, image_encoding, frame)?;
+
+    Ok(())
+}
+
+fn get_region_from_args(args: &CmdArgs, output: &Output) -> Option<Result<Region>> {
+    if args.x.is_some() || args.y.is_some() || args.width.is_some() || args.height.is_some() {
         let x = args.x.unwrap_or(0);
         let y = args.y.unwrap_or(0);
         let width = args.width.unwrap_or((output.width as i32 - x).max(0));
@@ -107,34 +124,16 @@ fn main() -> Result<()> {
             || width == 0
             || height == 0
         {
-            bail!("Region is invalid");
+            Some(anyhow!("Region is invalid"));
         }
 
-        Some(Region {
+        return Some(Ok(Region {
             x,
             y,
             width,
             height,
-        })
-    } else {
-        None
-    };
+        }));
+    }
 
-    let frame = if let Some(region) = region {
-        screenshot_backend.screenshot(&output.output, false, Some(region))?
-    } else {
-        screenshot_backend.screenshot(&output.output, false, None)?
-    };
-
-    // Write screenshot to disk
-    let path = format!(
-        "{}/{}.{}",
-        directory,
-        filename,
-        Into::<String>::into(image_encoding)
-    );
-    debug!("Write screenshot to {}", path);
-    write_to_file(File::create(path)?, image_encoding, frame)?;
-
-    Ok(())
+    None
 }
