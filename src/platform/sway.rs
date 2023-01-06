@@ -23,7 +23,10 @@ use wayland_client::{
     protocol::{wl_output::WlOutput, wl_shm},
     Display, EventQueue, GlobalManager, Main,
 };
-use wayland_protocols::wlr::unstable::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use wayland_protocols::{
+    unstable::xdg_output::v1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1,
+    wlr::unstable::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+};
 
 const WL_OUTPUT_VERSION: u32 = 4;
 
@@ -31,7 +34,7 @@ pub struct PlatformWayland {
     event_queue: EventQueue,
     globals: GlobalManager,
     screencopy_manager: Main<ZwlrScreencopyManagerV1>,
-    outputs: Rc<RefCell<Vec<WaylandOutput>>>,
+    outputs: Vec<WaylandOutput>,
 }
 
 impl PlatformWayland {
@@ -42,18 +45,12 @@ impl PlatformWayland {
         let attached_display = (*display).clone().attach(event_queue.token());
 
         let wayland_outputs = Rc::new(RefCell::new(Vec::new()));
-        let wayland_outputs_clone = wayland_outputs.clone();
 
         let globals = GlobalManager::new_with_cb(
             &attached_display,
-            global_filter!([
-                WlOutput,
-                WL_OUTPUT_VERSION,
+            global_filter!([WlOutput, WL_OUTPUT_VERSION, {
+                let wayland_outputs = wayland_outputs.clone();
                 move |output_handle: Main<WlOutput>, _: DispatchData| {
-                    let mut name = "<unknown>".to_owned();
-                    let mut output_scale = 1;
-                    let mut output_width = 0;
-                    let mut output_height = 0;
                     let wayland_outputs = wayland_outputs.clone();
 
                     output_handle.quick_assign(move |output_handle, event, _| {
@@ -69,40 +66,21 @@ impl PlatformWayland {
                                 model,
                                 transform: _,
                             } => {
-                                name = model;
-                            }
-                            Event::Mode {
-                                flags: _,
-                                width,
-                                height,
-                                refresh: _,
-                            } => {
-                                output_width = width;
-                                output_height = height;
-                            }
-                            Event::Scale { factor } => {
-                                output_scale = factor;
-                            }
-                            Event::Done => {
-                                let output = Output {
-                                    name: name.clone(),
-                                    width: output_width,
-                                    height: output_height,
-                                    scale: output_scale,
-                                };
+                                debug!("Output geometry event");
+                                let mut output = Output::default();
+                                output.name = model;
 
                                 let wayland_output = WaylandOutput {
                                     raw: output_handle.clone(),
                                     output,
                                 };
-                                info!("Found output: {:?}", wayland_output);
                                 wayland_outputs.borrow_mut().push(wayland_output);
                             }
                             _ => (),
                         }
                     })
                 }
-            ]),
+            }]),
         );
 
         // A roundtrip synchronization to make sure the server received our registry
@@ -111,6 +89,64 @@ impl PlatformWayland {
 
         // Init outputs
         event_queue.sync_roundtrip(&mut (), |_, _, _| ())?;
+
+        let mut final_wayland_outputs = Vec::new();
+
+        let xdg_output_manager = globals.instantiate_exact::<ZxdgOutputManagerV1>(3).context("Failed to create xdg output manger. Does your compositor implement ZxdgOutputManagerV1?")?;
+        for wayland_output in wayland_outputs.borrow().iter() {
+            let xdg_output = xdg_output_manager.get_xdg_output(&wayland_output.raw);
+
+            let output_x = Rc::new(RefCell::new(0));
+            let output_y = Rc::new(RefCell::new(0));
+            let output_width = Rc::new(RefCell::new(0));
+            let output_height = Rc::new(RefCell::new(0));
+
+            xdg_output.quick_assign({
+                let output_x = output_x.clone();
+                let output_y = output_y.clone();
+                let output_width = output_width.clone();
+                let output_height = output_height.clone();
+
+                move |_handle, event, _| {
+                    use wayland_protocols::unstable::xdg_output::v1::client::zxdg_output_v1::Event;
+                    match event {
+                        Event::LogicalPosition { x, y } => {
+                            debug!("Xdg output logical position event");
+                            *output_x.borrow_mut() = x;
+                            *output_y.borrow_mut() = y;
+                        }
+                        Event::LogicalSize { width, height } => {
+                            debug!("Xdg output logical size event");
+                            *output_width.borrow_mut() = width;
+                            *output_height.borrow_mut() = height;
+                        }
+                        Event::Done => {
+                            debug!("Xdg output done event");
+                        }
+                        _ => (),
+                    }
+                }
+            });
+
+            event_queue
+                .sync_roundtrip(&mut (), |_, _, _| unreachable!())
+                .unwrap();
+
+            let wayland_output = WaylandOutput {
+                raw: wayland_output.raw.clone(),
+                output: Output {
+                    name: wayland_output.output.name.clone(),
+                    x: output_x.take(),
+                    y: output_y.take(),
+                    width: output_width.take(),
+                    height: output_height.take(),
+                    scale: wayland_output.output.scale,
+                },
+            };
+            info!("Found output: {:?}", wayland_output);
+
+            final_wayland_outputs.push(wayland_output);
+        }
 
         // Instantiating screencopy manager
         let screencopy_manager = globals
@@ -123,12 +159,12 @@ impl PlatformWayland {
             event_queue,
             globals,
             screencopy_manager,
-            outputs: wayland_outputs_clone,
+            outputs: final_wayland_outputs,
         })
     }
 
     fn find_wl_output(&self, output: &Output) -> Result<Main<WlOutput>> {
-        for wayland_output in self.outputs.borrow().iter() {
+        for wayland_output in &self.outputs {
             if wayland_output.output.name == output.name {
                 return Ok(wayland_output.raw.clone());
             }
@@ -140,7 +176,6 @@ impl PlatformWayland {
 impl Platform for PlatformWayland {
     fn outputs(&self) -> Vec<Output> {
         self.outputs
-            .borrow()
             .iter()
             .map(|wayland_output| wayland_output.output.clone())
             .collect::<Vec<_>>()
@@ -160,8 +195,8 @@ impl Platform for PlatformWayland {
             self.screencopy_manager.capture_output_region(
                 overlay_cursor as i32,
                 &wl_output_handle,
-                region.x as i32,
-                region.y as i32,
+                region.x - output.x as i32,
+                region.y - output.y as i32,
                 region.width as i32,
                 region.height as i32,
             )

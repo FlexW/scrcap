@@ -18,6 +18,8 @@ pub struct Region {
 #[derive(Debug, Clone)]
 pub struct Output {
     pub name: String,
+    pub x: i32,
+    pub y: i32,
     pub width: i32,
     pub height: i32,
     pub scale: i32,
@@ -27,6 +29,8 @@ impl Default for Output {
     fn default() -> Self {
         Self {
             name: "<unknown>".into(),
+            x: 0,
+            y: 0,
             width: 0,
             height: 0,
             scale: 1,
