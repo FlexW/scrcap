@@ -49,4 +49,5 @@ RUST_LOG=DEBUG wayshot
 ```
 The log level can be one of `DEBUG`, `INFO`, `WARN`, `ERROR`.
 
-
+## Credits
+[Wayshot](https://github.com/waycrate/wayshot)
