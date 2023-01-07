@@ -1,3 +1,4 @@
+mod gui;
 mod output;
 mod platform;
 
@@ -53,6 +54,9 @@ fn main() -> Result<()> {
         .env()
         .init()
         .unwrap();
+
+    gui::run()?;
+    return Ok(());
 
     // Parse command line args
     let args = CmdArgs::parse();
