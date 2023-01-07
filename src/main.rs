@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     let outputs = platform.outputs();
 
     // Find output by name if needed
-    let output = get_output(args.output_name.clone(), &outputs);
+    let output = get_output(args.output_name.clone(), &outputs)?;
 
     // Get region on which screenshot should be captured
     let region = if args.active {
@@ -143,19 +143,20 @@ fn get_region_from_args(args: &CmdArgs, output: &Output) -> Option<Result<Region
 }
 
 /// Find the matching output to output_name or return the first output
-fn get_output<'a>(output_name: Option<String>, outputs: &'a [Output]) -> &'a Output {
+fn get_output(output_name: Option<String>, outputs: &[Output]) -> Result<&Output> {
     if let Some(output_name) = output_name {
+        // Find output with matching name
         for output in outputs {
             if output.name == output_name {
-                return output;
+                return Ok(output);
             }
         }
-        panic!("No output named {} found!", output_name);
+        bail!("No output named {} found!", output_name);
     } else if !outputs.is_empty() {
         // Take the first one
-        return &outputs[0];
+        return Ok(&outputs[0]);
     } else {
-        panic!("No output found!");
+        bail!("No output found!");
     };
 }
 
