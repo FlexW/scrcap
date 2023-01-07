@@ -9,7 +9,7 @@ use std::fs::File;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::output::{get_screenshot_directory, write_to_file};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use log::{debug, warn, LevelFilter};
 use simple_logger::SimpleLogger;
 
@@ -41,6 +41,9 @@ struct CmdArgs {
     /// Make a screenshot of the active window
     #[arg(short, long)]
     active: bool,
+    /// Name of the output to screenshot. E.g. DP-1, eDP-1
+    #[arg(short, long)]
+    output_name: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -82,7 +85,9 @@ fn main() -> Result<()> {
     // Take the screenshot
     let mut platform = create_platform()?;
     let outputs = platform.outputs();
-    let output = &outputs[0];
+
+    // Find output by name if needed
+    let output = get_output(args.output_name.clone(), &outputs);
 
     // Get region on which screenshot should be captured
     let region = if args.active {
@@ -92,6 +97,14 @@ fn main() -> Result<()> {
     } else {
         None
     };
+
+    // Get matching output for region if needed
+    let output = if let Some(region) = region {
+        find_output_from_region(region, &outputs)?
+    } else {
+        output
+    };
+    debug!("Take screenshot on output {:?}", output);
 
     let frame = platform.capture_frame(output, false, region)?;
 
@@ -108,6 +121,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Extract region from command line arguments
 fn get_region_from_args(args: &CmdArgs, output: &Output) -> Option<Result<Region>> {
     if args.x.is_some() || args.y.is_some() || args.width.is_some() || args.height.is_some() {
         let x = args.x.unwrap_or(0);
@@ -115,25 +129,42 @@ fn get_region_from_args(args: &CmdArgs, output: &Output) -> Option<Result<Region
         let width = args.width.unwrap_or((output.width as i32 - x).max(0));
         let height = args.height.unwrap_or((output.height as i32 - y).max(0));
 
-        if x < 0
-            || y < 0
-            || width < 0
-            || height < 0
-            || x >= output.width as i32
-            || y >= output.height as i32
-            || width == 0
-            || height == 0
-        {
+        let capture_region = Region::new(x, y, width, height);
+        // TODO: Make output_region part of Output
+        let output_region = Region::new(output.x, output.y, output.width, output.height);
+        if !output_region.contains(capture_region) {
             Some(anyhow!("Region is invalid"));
         }
 
-        return Some(Ok(Region {
-            x,
-            y,
-            width,
-            height,
-        }));
+        return Some(Ok(Region::new(x, y, width, height)));
     }
 
     None
+}
+
+/// Find the matching output to output_name or return the first output
+fn get_output<'a>(output_name: Option<String>, outputs: &'a [Output]) -> &'a Output {
+    if let Some(output_name) = output_name {
+        for output in outputs {
+            if output.name == output_name {
+                return output;
+            }
+        }
+        panic!("No output named {} found!", output_name);
+    } else if !outputs.is_empty() {
+        // Take the first one
+        return &outputs[0];
+    } else {
+        panic!("No output found!");
+    };
+}
+
+fn find_output_from_region(region: Region, outputs: &[Output]) -> Result<&Output> {
+    for output in outputs {
+        let output_region = Region::new(output.x, output.y, output.width, output.height);
+        if output_region.contains(region) {
+            return Ok(output);
+        }
+    }
+    bail!("Did not find Output for given Region")
 }

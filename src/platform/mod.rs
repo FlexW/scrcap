@@ -15,6 +15,24 @@ pub struct Region {
     pub height: i32,
 }
 
+impl Region {
+    pub fn new(x: i32, y: i32, width: i32, height: i32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    pub fn contains(&self, other: Region) -> bool {
+        self.x <= other.x
+            && self.y <= other.y
+            && (other.x + other.width) <= (self.x + self.width)
+            && (other.y + other.height) <= (self.y + self.height)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Output {
     pub name: String,

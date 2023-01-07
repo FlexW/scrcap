@@ -63,16 +63,13 @@ impl PlatformWayland {
                                 physical_height: _,
                                 subpixel: _,
                                 make: _,
-                                model,
+                                model: _,
                                 transform: _,
                             } => {
                                 debug!("Output geometry event");
-                                let mut output = Output::default();
-                                output.name = model;
-
                                 let wayland_output = WaylandOutput {
                                     raw: output_handle.clone(),
-                                    output,
+                                    output: Output::default(),
                                 };
                                 wayland_outputs.borrow_mut().push(wayland_output);
                             }
@@ -96,12 +93,14 @@ impl PlatformWayland {
         for wayland_output in wayland_outputs.borrow().iter() {
             let xdg_output = xdg_output_manager.get_xdg_output(&wayland_output.raw);
 
+            let output_name = Rc::new(RefCell::new(String::new()));
             let output_x = Rc::new(RefCell::new(0));
             let output_y = Rc::new(RefCell::new(0));
             let output_width = Rc::new(RefCell::new(0));
             let output_height = Rc::new(RefCell::new(0));
 
             xdg_output.quick_assign({
+                let output_name = output_name.clone();
                 let output_x = output_x.clone();
                 let output_y = output_y.clone();
                 let output_width = output_width.clone();
@@ -120,6 +119,9 @@ impl PlatformWayland {
                             *output_width.borrow_mut() = width;
                             *output_height.borrow_mut() = height;
                         }
+                        Event::Name { name } => {
+                            *output_name.borrow_mut() = name.clone();
+                        }
                         Event::Done => {
                             debug!("Xdg output done event");
                         }
@@ -135,7 +137,7 @@ impl PlatformWayland {
             let wayland_output = WaylandOutput {
                 raw: wayland_output.raw.clone(),
                 output: Output {
-                    name: wayland_output.output.name.clone(),
+                    name: output_name.take(),
                     x: output_x.take(),
                     y: output_y.take(),
                     width: output_width.take(),
@@ -340,12 +342,7 @@ impl Platform for PlatformWayland {
                 focused_node.name, x, y, width, height
             );
 
-            return Ok(Region {
-                x,
-                y,
-                width,
-                height,
-            });
+            return Ok(Region::new(x, y, width, height));
         }
 
         bail!("Could not find an active window")
