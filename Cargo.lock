@@ -1200,6 +1200,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 
 [[package]]
+name = "scrcap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "gtk4",
+ "image",
+ "log",
+ "memmap2",
+ "nix 0.26.1",
+ "piet",
+ "simple_logger",
+ "swayipc",
+ "thiserror",
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "semver"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1622,26 +1642,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be12ce1a3c39ec7dba25594b97b42cb3195d54953ddb9d3d95a7c3902bc6e9d4"
 dependencies = [
  "pkg-config",
-]
-
-[[package]]
-name = "wayshot"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "gtk4",
- "image",
- "log",
- "memmap2",
- "nix 0.26.1",
- "piet",
- "simple_logger",
- "swayipc",
- "thiserror",
- "wayland-client",
- "wayland-protocols",
 ]
 
 [[package]]
