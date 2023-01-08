@@ -11,14 +11,15 @@ use iced::widget::Space;
 use iced::window::Position;
 use iced::Alignment;
 use iced::Application;
-use iced::Color;
 use iced::Element;
 use iced::Length;
 
 #[derive(Debug)]
 enum Scrcap {
     Loading,
-    Loaded(State),
+    Ready(State),
+    TakingScreenshot,
+    ScreenshotTaken,
 }
 
 impl iced::Application for Scrcap {
@@ -42,14 +43,14 @@ impl iced::Application for Scrcap {
         match self {
             Scrcap::Loading => match message {
                 Message::Loaded(Ok(state)) => {
-                    *self = Self::Loaded(state);
+                    *self = Self::Ready(state);
                 }
                 Message::Loaded(Err(_)) => {
                     panic!("Could not init capture backend!");
                 }
                 _ => (),
             },
-            Scrcap::Loaded(state) => match message {
+            Scrcap::Ready(state) => match message {
                 Message::ScreenshotModeChanged(mode) => {
                     state.current_screenshot_mode = mode;
                 }
@@ -64,8 +65,17 @@ impl iced::Application for Scrcap {
                         state.delay_in_seconds -= 1;
                     }
                 }
+                Message::TakeScreenshot => {
+                    // TODO: Set window invisible
+                    // TODO: Capturing ...
+                    *self = Self::TakingScreenshot;
+                }
                 _ => (),
             },
+            Scrcap::TakingScreenshot => {
+                *self = Self::ScreenshotTaken;
+            }
+            Scrcap::ScreenshotTaken => {}
         }
 
         iced::Command::none()
@@ -74,16 +84,10 @@ impl iced::Application for Scrcap {
     fn view(&self) -> Element<'_, Self::Message, iced::Renderer<Self::Theme>> {
         match self {
             Scrcap::Loading => loading_message_view(),
-            Scrcap::Loaded(state) => {
-                // let title =
-                //     text("Take Screenshot").horizontal_alignment(alignment::Horizontal::Center);
-
+            Scrcap::Ready(state) => {
                 let mode_controls = screenshot_mode_view(state.current_screenshot_mode);
-
                 let pointer_controls = include_pointer_view(state.is_show_pointer);
-
                 let delay_controls = delay_view(state.delay_in_seconds);
-
                 let screenshot_button = take_screenshot_button_view();
 
                 let content = column![
@@ -102,6 +106,8 @@ impl iced::Application for Scrcap {
                     .center_x()
                     .into()
             }
+            Scrcap::TakingScreenshot => take_screenshot_message_view(),
+            Scrcap::ScreenshotTaken => message_view("Screenshot Taken"),
         }
     }
 }
@@ -131,7 +137,7 @@ enum Message {
     DecrementDelay,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct State {
     current_screenshot_mode: ScreenshotMode,
     is_show_pointer: bool,
@@ -185,8 +191,18 @@ fn screenshot_mode_view(current_mode: ScreenshotMode) -> Element<'static, Messag
 
 /// Create a simple loading message
 fn loading_message_view() -> Element<'static, Message> {
+    message_view("Loading ...")
+}
+
+/// Create a simple taking screenshot message
+fn take_screenshot_message_view() -> Element<'static, Message> {
+    message_view("Taking screenshot")
+}
+
+/// Create a simple centered message
+fn message_view(message: &str) -> Element<'static, Message> {
     container(
-        text("Loading...")
+        text(message)
             .horizontal_alignment(alignment::Horizontal::Center)
             .size(50),
     )
