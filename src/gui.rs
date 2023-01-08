@@ -1,3 +1,8 @@
+use std::fs::File;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+use anyhow::{bail, Result};
 use iced;
 use iced::alignment;
 use iced::theme;
@@ -13,6 +18,15 @@ use iced::Alignment;
 use iced::Application;
 use iced::Element;
 use iced::Length;
+use log::debug;
+use log::warn;
+
+use crate::output::get_screenshot_directory;
+use crate::output::write_to_file;
+use crate::output::EncodingFormat;
+use crate::platform::create_platform;
+use crate::platform::Output;
+use crate::platform::Region;
 
 #[derive(Debug)]
 enum Scrcap {
@@ -68,7 +82,69 @@ impl iced::Application for Scrcap {
                 Message::TakeScreenshot => {
                     // TODO: Set window invisible
                     // TODO: Capturing ...
-                    *self = Self::TakingScreenshot;
+
+                    // TODO: Handle errors
+                    let mut platform = create_platform().expect("Could not create capture backend");
+                    let outputs = platform.outputs();
+                    // Find output by name if needed
+                    let output = get_output(None, &outputs).expect("Could not find an output");
+
+                    // Get region on which screenshot should be captured
+                    let region = if state.current_screenshot_mode == ScreenshotMode::Window {
+                        Some(
+                            platform
+                                .focused_window_area()
+                                .expect("Can not get window area"),
+                        )
+                    } else {
+                        None
+                    };
+
+                    // Get matching output for region if needed
+                    let output = if let Some(region) = region {
+                        find_output_from_region(region, &outputs)
+                            .expect("Can not find a matching output for region")
+                    } else {
+                        output
+                    };
+                    debug!("Take screenshot on output {:?}", output);
+
+                    let frame = platform
+                        .capture_frame(output, false, region)
+                        .expect("Could not capture");
+
+                    // Write screenshot to disk
+                    let directory =
+                        get_screenshot_directory().expect("Could not get screenshot directory");
+                    // Generate a name
+                    let time = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                        Ok(n) => n.as_secs().to_string(),
+                        Err(_) => {
+                            warn!("SystemTime before UNIX EPOCH!");
+                            "TIME-BEFORE-UNIX-EPOCH".into()
+                        }
+                    };
+                    let filename = format!("screenshot-{}", time);
+                    let image_encoding = EncodingFormat::Png;
+
+                    let path = format!(
+                        "{}/{}.{}",
+                        directory,
+                        filename,
+                        Into::<String>::into(image_encoding)
+                    );
+
+                    debug!("Write screenshot to {}", path);
+                    write_to_file(
+                        File::create(path).expect("Could not create file"),
+                        image_encoding,
+                        frame,
+                    )
+                    .expect("Could not write screenshot");
+
+                    // TODO: Should be taking screenshot and screenshot operation should be done in background
+                    // *self = Self::TakingScreenshot;
+                    *self = Self::ScreenshotTaken;
                 }
                 _ => (),
             },
@@ -107,7 +183,7 @@ impl iced::Application for Scrcap {
                     .into()
             }
             Scrcap::TakingScreenshot => take_screenshot_message_view(),
-            Scrcap::ScreenshotTaken => message_view("Screenshot Taken"),
+            Scrcap::ScreenshotTaken => message_view("Screenshot ready"),
         }
     }
 }
@@ -196,7 +272,7 @@ fn loading_message_view() -> Element<'static, Message> {
 
 /// Create a simple taking screenshot message
 fn take_screenshot_message_view() -> Element<'static, Message> {
-    message_view("Taking screenshot")
+    message_view("Taking screenshot...")
 }
 
 /// Create a simple centered message
@@ -204,7 +280,7 @@ fn message_view(message: &str) -> Element<'static, Message> {
     container(
         text(message)
             .horizontal_alignment(alignment::Horizontal::Center)
-            .size(50),
+            .size(20),
     )
     .width(Length::Fill)
     .height(Length::Fill)
@@ -267,4 +343,32 @@ fn take_screenshot_button_view() -> Element<'static, Message> {
 enum ScreenshotMode {
     Screen,
     Window,
+}
+
+/// Find the matching output to output_name or return the first output
+fn get_output(output_name: Option<String>, outputs: &[Output]) -> Result<&Output> {
+    if let Some(output_name) = output_name {
+        // Find output with matching name
+        for output in outputs {
+            if output.name == output_name {
+                return Ok(output);
+            }
+        }
+        bail!("No output named {} found!", output_name);
+    } else if !outputs.is_empty() {
+        // Take the first one
+        return Ok(&outputs[0]);
+    } else {
+        bail!("No output found!");
+    };
+}
+
+fn find_output_from_region(region: Region, outputs: &[Output]) -> Result<&Output> {
+    for output in outputs {
+        let output_region = Region::new(output.x, output.y, output.width, output.height);
+        if output_region.contains(region) {
+            return Ok(output);
+        }
+    }
+    bail!("Did not find Output for given Region")
 }
