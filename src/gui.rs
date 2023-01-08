@@ -59,6 +59,8 @@ impl iced::Application for Scrcap {
     }
 
     fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
+        // TODO: Most likley I want to process backend cmd results there (in a
+        // loop) with try and then send messages
         match self {
             Scrcap::Loading => match message {
                 Message::Loaded(Ok(state)) => {
