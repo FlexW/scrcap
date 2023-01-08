@@ -1,4 +1,7 @@
 use std::fs::File;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
@@ -19,8 +22,10 @@ use iced::Application;
 use iced::Element;
 use iced::Length;
 use log::debug;
+use log::info;
 use log::warn;
 
+use crate::gui_backend;
 use crate::output::get_screenshot_directory;
 use crate::output::write_to_file;
 use crate::output::EncodingFormat;
@@ -57,6 +62,17 @@ impl iced::Application for Scrcap {
         match self {
             Scrcap::Loading => match message {
                 Message::Loaded(Ok(state)) => {
+                    state
+                        .cmd_tx
+                        .send(gui_backend::Command::ListOutputs)
+                        .unwrap();
+                    let outputs = state.cmd_res_rx.lock().unwrap().recv().unwrap();
+                    if let gui_backend::CommandResult::Outputs(outputs) = outputs {
+                        info!("Received outputs: {:?}", outputs);
+                    } else {
+                        warn!("Received unexpected result");
+                    }
+
                     *self = Self::Ready(state);
                 }
                 Message::Loaded(Err(_)) => {
@@ -218,14 +234,23 @@ struct State {
     current_screenshot_mode: ScreenshotMode,
     is_show_pointer: bool,
     delay_in_seconds: u32,
+    cmd_tx: mpsc::Sender<gui_backend::Command>,
+    cmd_res_rx: Arc<Mutex<mpsc::Receiver<gui_backend::CommandResult>>>,
 }
 
 impl State {
     async fn new() -> Result<Self, LoadError> {
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (cmd_res_tx, cmd_res_rx) = mpsc::channel();
+
+        gui_backend::run_backend(cmd_rx, cmd_res_tx);
+
         Ok(Self {
             current_screenshot_mode: ScreenshotMode::Screen,
             is_show_pointer: false,
             delay_in_seconds: 0,
+            cmd_tx,
+            cmd_res_rx: Arc::new(Mutex::new(cmd_res_rx)),
         })
     }
 }
