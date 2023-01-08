@@ -1,8 +1,15 @@
 use iced;
+use iced::theme;
 use iced::widget::button;
 use iced::widget::column;
+use iced::widget::container;
+use iced::widget::row;
 use iced::widget::text;
+use iced::window::Position;
+use iced::Alignment;
 use iced::Application;
+use iced::Element;
+use iced::Length;
 
 #[derive(Debug)]
 enum Scrcap {
@@ -44,19 +51,30 @@ impl iced::Application for Scrcap {
         iced::Command::none()
     }
 
-    fn view(&self) -> iced::Element<'_, Self::Message, iced::Renderer<Self::Theme>> {
-        column![
-            text("Take screenshot"),
-            button("Capture").on_press(Message::TakeScreenshot)
-        ]
-        .into()
+    fn view(&self) -> Element<'_, Self::Message, iced::Renderer<Self::Theme>> {
+        let mode_controls = screenshot_mode_controls(ScreenshotMode::Screen);
+
+        let content = column![text("Take screenshot"), mode_controls]
+            .spacing(20)
+            .max_width(800);
+
+        container(content)
+            .width(Length::Fill)
+            .padding(46)
+            .center_x()
+            .into()
     }
 }
 
 pub fn run() -> iced::Result {
+    let win_size = (400, 300);
     Scrcap::run(iced::Settings {
         window: iced::window::Settings {
-            size: (200, 200),
+            min_size: Some(win_size),
+            size: win_size,
+            max_size: Some(win_size),
+            resizable: false,
+            position: Position::Centered,
             ..iced::window::Settings::default()
         },
         ..iced::Settings::default()
@@ -67,6 +85,7 @@ pub fn run() -> iced::Result {
 enum Message {
     Loaded(Result<State, LoadError>),
     TakeScreenshot,
+    ScreenshotModeChanged(ScreenshotMode),
 }
 
 #[derive(Debug, Clone)]
@@ -80,3 +99,37 @@ impl State {
 
 #[derive(Debug, Clone)]
 struct LoadError;
+
+/// Create the button row for choosing the screenshot mode
+fn screenshot_mode_controls(current_mode: ScreenshotMode) -> Element<'static, Message> {
+    // Create a button with primary style if the current screenshot mode matches
+    // the buttons mode or create a button with text style if the buttons mode
+    // does not match.
+    let mode_button = |label, mode, current_mode| {
+        let label = text(label).size(16);
+
+        let button = button(label).style(if mode == current_mode {
+            theme::Button::Primary
+        } else {
+            theme::Button::Text
+        });
+
+        button
+            .on_press(Message::ScreenshotModeChanged(mode))
+            .padding(8)
+    };
+
+    row![
+        mode_button("Screen", ScreenshotMode::Screen, current_mode),
+        mode_button("Window", ScreenshotMode::Window, current_mode)
+    ]
+    .spacing(20)
+    .align_items(Alignment::Center)
+    .into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScreenshotMode {
+    Screen,
+    Window,
+}
