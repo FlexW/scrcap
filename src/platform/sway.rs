@@ -437,6 +437,7 @@ fn try_read_frame(
                 let data = &mut *frame_mmap;
                 let converter = create_converter(frame_format.format);
                 let frame_color_type = converter.convert_inplace(data);
+                // TODO: should probably save file aswell
                 Frame {
                     frame_format,
                     frame_color_type,

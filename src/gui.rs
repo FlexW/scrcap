@@ -1,11 +1,8 @@
-use std::fs::File;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use iced;
 use iced::alignment;
 use iced::theme;
@@ -23,20 +20,13 @@ use iced::Element;
 use iced::Length;
 use log::debug;
 use log::info;
-use log::warn;
 
 use crate::gui_backend;
-use crate::output::get_screenshot_directory;
-use crate::output::write_to_file;
-use crate::output::EncodingFormat;
-use crate::platform::create_platform;
-use crate::platform::Output;
-use crate::platform::Region;
 
 #[derive(Debug)]
 enum Scrcap {
     Loading,
-    Ready(State),
+    Ready(Arc<Mutex<State>>),
     TakingScreenshot,
     ScreenshotTaken,
 }
@@ -59,21 +49,15 @@ impl iced::Application for Scrcap {
     }
 
     fn update(&mut self, message: Self::Message) -> iced::Command<Self::Message> {
-        // TODO: Most likley I want to process backend cmd results there (in a
-        // loop) with try and then send messages
         match self {
             Scrcap::Loading => match message {
                 Message::Loaded(Ok(state)) => {
                     state
+                        .lock()
+                        .unwrap()
                         .cmd_tx
                         .send(gui_backend::Command::ListOutputs)
                         .unwrap();
-                    let outputs = state.cmd_res_rx.lock().unwrap().recv().unwrap();
-                    if let gui_backend::CommandResult::Outputs(outputs) = outputs {
-                        info!("Received outputs: {:?}", outputs);
-                    } else {
-                        warn!("Received unexpected result");
-                    }
 
                     *self = Self::Ready(state);
                 }
@@ -82,90 +66,66 @@ impl iced::Application for Scrcap {
                 }
                 _ => (),
             },
-            Scrcap::Ready(state) => match message {
-                Message::ScreenshotModeChanged(mode) => {
-                    state.current_screenshot_mode = mode;
-                }
-                Message::ShowPointer(is_shown) => {
-                    state.is_show_pointer = is_shown;
-                }
-                Message::IncrementDelay => {
-                    state.delay_in_seconds += 1;
-                }
-                Message::DecrementDelay => {
-                    if state.delay_in_seconds > 0 {
-                        state.delay_in_seconds -= 1;
+            Scrcap::Ready(state) => {
+                state.lock().unwrap().process_backend_cmd_results();
+
+                // info!(
+                //     "outputs: {:?}, mode: {:?}",
+                //     state.outputs, state.current_screenshot_mode
+                // );
+
+                match message {
+                    Message::ScreenshotModeChanged(mode) => {
+                        state.lock().unwrap().current_screenshot_mode = mode;
                     }
-                }
-                Message::TakeScreenshot => {
-                    // TODO: Set window invisible
-                    // TODO: Capturing ...
-
-                    // TODO: Handle errors
-                    let mut platform = create_platform().expect("Could not create capture backend");
-                    let outputs = platform.outputs();
-                    // Find output by name if needed
-                    let output = get_output(None, &outputs).expect("Could not find an output");
-
-                    // Get region on which screenshot should be captured
-                    let region = if state.current_screenshot_mode == ScreenshotMode::Window {
-                        Some(
-                            platform
-                                .focused_window_area()
-                                .expect("Can not get window area"),
-                        )
-                    } else {
-                        None
-                    };
-
-                    // Get matching output for region if needed
-                    let output = if let Some(region) = region {
-                        find_output_from_region(region, &outputs)
-                            .expect("Can not find a matching output for region")
-                    } else {
-                        output
-                    };
-                    debug!("Take screenshot on output {:?}", output);
-
-                    let frame = platform
-                        .capture_frame(output, false, region)
-                        .expect("Could not capture");
-
-                    // Write screenshot to disk
-                    let directory =
-                        get_screenshot_directory().expect("Could not get screenshot directory");
-                    // Generate a name
-                    let time = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                        Ok(n) => n.as_secs().to_string(),
-                        Err(_) => {
-                            warn!("SystemTime before UNIX EPOCH!");
-                            "TIME-BEFORE-UNIX-EPOCH".into()
+                    Message::ShowPointer(is_shown) => {
+                        state.lock().unwrap().is_show_pointer = is_shown;
+                    }
+                    Message::IncrementDelay => {
+                        state.lock().unwrap().delay_in_seconds += 1;
+                    }
+                    Message::DecrementDelay => {
+                        if state.lock().unwrap().delay_in_seconds > 0 {
+                            state.lock().unwrap().delay_in_seconds -= 1;
                         }
-                    };
-                    let filename = format!("screenshot-{}", time);
-                    let image_encoding = EncodingFormat::Png;
+                    }
+                    Message::TakeScreenshot => {
+                        // TODO: Set window invisible
+                        let current_screenshot_mode = state.lock().unwrap().current_screenshot_mode;
+                        match current_screenshot_mode {
+                            ScreenshotMode::Screen => {
+                                let output = state.lock().unwrap().choosen_output.clone();
+                                let output = if let Some(output) = output {
+                                    output.into()
+                                } else if !state.lock().unwrap().outputs.is_empty() {
+                                    state.lock().unwrap().outputs[0].clone()
+                                } else {
+                                    panic!("Could not find output for capturing");
+                                };
 
-                    let path = format!(
-                        "{}/{}.{}",
-                        directory,
-                        filename,
-                        Into::<String>::into(image_encoding)
-                    );
+                                state
+                                    .lock()
+                                    .unwrap()
+                                    .cmd_tx
+                                    .send(gui_backend::Command::CaptureScreen(output))
+                                    .unwrap();
+                            }
+                            ScreenshotMode::Window => {
+                                state
+                                    .lock()
+                                    .unwrap()
+                                    .cmd_tx
+                                    .send(gui_backend::Command::CaptureWindow)
+                                    .unwrap();
+                            }
+                        }
 
-                    debug!("Write screenshot to {}", path);
-                    write_to_file(
-                        File::create(path).expect("Could not create file"),
-                        image_encoding,
-                        frame,
-                    )
-                    .expect("Could not write screenshot");
-
-                    // TODO: Should be taking screenshot and screenshot operation should be done in background
-                    // *self = Self::TakingScreenshot;
-                    *self = Self::ScreenshotTaken;
+                        // TODO: Handle errors
+                        // *self = Self::ScreenshotTaken;
+                    }
+                    _ => (),
                 }
-                _ => (),
-            },
+            }
             Scrcap::TakingScreenshot => {
                 *self = Self::ScreenshotTaken;
             }
@@ -179,6 +139,8 @@ impl iced::Application for Scrcap {
         match self {
             Scrcap::Loading => loading_message_view(),
             Scrcap::Ready(state) => {
+                let state = state.lock().unwrap();
+
                 let mode_controls = screenshot_mode_view(state.current_screenshot_mode);
                 let pointer_controls = include_pointer_view(state.is_show_pointer);
                 let delay_controls = delay_view(state.delay_in_seconds);
@@ -223,7 +185,7 @@ pub fn run() -> iced::Result {
 
 #[derive(Debug, Clone)]
 enum Message {
-    Loaded(Result<State, LoadError>),
+    Loaded(Result<Arc<Mutex<State>>, LoadError>),
     TakeScreenshot,
     ScreenshotModeChanged(ScreenshotMode),
     ShowPointer(bool),
@@ -231,29 +193,67 @@ enum Message {
     DecrementDelay,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct State {
     current_screenshot_mode: ScreenshotMode,
     is_show_pointer: bool,
     delay_in_seconds: u32,
+
+    outputs: Vec<String>,
+    choosen_output: Option<String>,
+
     cmd_tx: mpsc::Sender<gui_backend::Command>,
-    cmd_res_rx: Arc<Mutex<mpsc::Receiver<gui_backend::CommandResult>>>,
+    cmd_res_rx: mpsc::Receiver<gui_backend::CommandResult>,
 }
 
 impl State {
-    async fn new() -> Result<Self, LoadError> {
+    async fn new() -> Result<Arc<Mutex<Self>>, LoadError> {
+        // let (cmd_tx, cmd_rx) = mpsc::sync_channel(3);
+        // let (cmd_res_tx, cmd_res_rx) = mpsc::sync_channel(3);
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (cmd_res_tx, cmd_res_rx) = mpsc::channel();
 
         gui_backend::run_backend(cmd_rx, cmd_res_tx);
 
-        Ok(Self {
+        Ok(Arc::new(Mutex::new(Self {
             current_screenshot_mode: ScreenshotMode::Screen,
             is_show_pointer: false,
             delay_in_seconds: 0,
+            outputs: Vec::new(),
+            choosen_output: None,
             cmd_tx,
-            cmd_res_rx: Arc::new(Mutex::new(cmd_res_rx)),
-        })
+            cmd_res_rx,
+        })))
+    }
+
+    fn process_backend_cmd_results(&mut self) {
+        loop {
+            match self.cmd_res_rx.try_recv() {
+                Ok(res) => match res {
+                    gui_backend::CommandResult::Outputs(outputs) => {
+                        info!("Outpus received {:?}", outputs);
+                        self.outputs = outputs;
+                    }
+                    gui_backend::CommandResult::FrameCaptured(frame) => {
+                        info!("Frame captured");
+                        self.cmd_tx
+                            .send(gui_backend::Command::SaveToDisk(None, frame))
+                            .unwrap();
+                    }
+                    gui_backend::CommandResult::SaveToDiskSuccess => {
+                        info!("Frame saved succesfully to disk");
+                    }
+                },
+                Err(mpsc::TryRecvError::Empty) => {
+                    debug!("No command results");
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    debug!("Backend thread has disconnected");
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -370,32 +370,4 @@ fn take_screenshot_button_view() -> Element<'static, Message> {
 enum ScreenshotMode {
     Screen,
     Window,
-}
-
-/// Find the matching output to output_name or return the first output
-fn get_output(output_name: Option<String>, outputs: &[Output]) -> Result<&Output> {
-    if let Some(output_name) = output_name {
-        // Find output with matching name
-        for output in outputs {
-            if output.name == output_name {
-                return Ok(output);
-            }
-        }
-        bail!("No output named {} found!", output_name);
-    } else if !outputs.is_empty() {
-        // Take the first one
-        return Ok(&outputs[0]);
-    } else {
-        bail!("No output found!");
-    };
-}
-
-fn find_output_from_region(region: Region, outputs: &[Output]) -> Result<&Output> {
-    for output in outputs {
-        let output_region = Region::new(output.x, output.y, output.width, output.height);
-        if output_region.contains(region) {
-            return Ok(output);
-        }
-    }
-    bail!("Did not find Output for given Region")
 }
