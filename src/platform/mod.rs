@@ -74,6 +74,7 @@ pub struct FrameDescription {
     pub stride: u32,
 }
 
+#[derive(Debug)]
 pub struct Frame {
     pub frame_format: FrameDescription,
     pub frame_mmap: MmapMut,

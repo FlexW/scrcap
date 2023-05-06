@@ -141,3 +141,110 @@ fn find_output_from_region(region: Region, outputs: &[Output]) -> Result<&Output
     }
     bail!("Did not find Output for given Region")
 }
+
+pub fn run() -> iced::Subscription<Event> {
+    struct Connect;
+
+    iced::subscription::unfold(
+        std::any::TypeId::of::<Connect>(),
+        State::Stopped,
+        |state| async move {
+            match state {
+                State::Stopped => {
+                    let (thread_sender, thread_receiver) = mpsc::channel();
+                    let wayland_thread = std::thread::spawn(move || {
+                        loop {
+                            // process messages
+                            let msg = thread_receiver.recv().expect("Failed to receive message");
+                        }
+                    });
+
+                    let (backend_sender, backend_receiver) = mpsc::channel();
+                    (
+                        Some(Event::Connected(Connection(backend_sender))),
+                        State::Running(thread_sender, backend_receiver, wayland_thread),
+                    )
+                }
+                State::Running(thread_sender, backend_receiver, wayland_thread) => {
+                    let message = backend_receiver.recv().expect("Could not receive message");
+                    match message {
+                        Message::ListOutputs => {
+                            // TODO: List outputs
+                            let outputs = vec!["DP-1".into(), "eDP-1".into()];
+
+                            thread_sender.send(message).expect("Failed to send message");
+                            // TODO: this needs a thread receiver
+                            let result =
+                                backend_receiver.recv().expect("Failed to receive message");
+                            (
+                                Some(Event::Outputs(outputs)),
+                                State::Running(thread_sender, backend_receiver, wayland_thread),
+                            )
+                        }
+                        Message::CaptureScreen(_) => {
+                            let duration = std::time::Duration::from_secs(2);
+                            std::thread::sleep(duration);
+                            (
+                                Some(Event::FrameCaptured),
+                                State::Running(thread_sender, backend_receiver, wayland_thread),
+                            )
+                        }
+                        Message::CaptureWindow => {
+                            let duration = std::time::Duration::from_secs(2);
+                            std::thread::sleep(duration);
+                            (
+                                Some(Event::FrameCaptured),
+                                State::Running(thread_sender, backend_receiver, wayland_thread),
+                            )
+                        }
+                        Message::SaveToDisk(_, _) => {
+                            let duration = std::time::Duration::from_secs(2);
+                            std::thread::sleep(duration);
+                            (
+                                Some(Event::SavedToDisk),
+                                State::Running(thread_sender, backend_receiver, wayland_thread),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+enum State {
+    Stopped,
+    Running(
+        mpsc::Sender<Message>,
+        mpsc::Receiver<Message>,
+        std::thread::JoinHandle<fn()>,
+    ),
+}
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    Connected(Connection),
+    Disconnected,
+    Outputs(Vec<String>),
+    FrameCaptured,
+    SavedToDisk,
+}
+
+#[derive(Debug, Clone)]
+pub struct Connection(mpsc::Sender<Message>);
+
+impl Connection {
+    pub fn send(&mut self, message: Message) {
+        self.0
+            .send(message)
+            .expect("Send message to backend failed");
+    }
+}
+
+#[derive(Debug)]
+pub enum Message {
+    ListOutputs,
+    CaptureScreen(String),
+    CaptureWindow,
+    SaveToDisk(Option<String>, Frame),
+}
